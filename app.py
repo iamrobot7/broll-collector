@@ -7,166 +7,251 @@ import urllib.request
 import urllib.parse
 import streamlit as st
 
-# Page setup
-st.set_page_config(page_title="B-Roll Collector Pro", page_icon="🎬", layout="centered")
+st.set_page_config(page_title="B-Roll's Collector", page_icon="🎬", layout="wide")
 
-# Custom UI Styling
+# Custom Styling
 st.markdown("""
 <style>
-    .stApp { background-color: #FAF7F2; color: #222222; }
-    .section-num { color: #D97706; font-weight: 800; font-size: 0.85rem; letter-spacing: 1px; }
-    .stButton>button { background-color: #D97706; color: white; border-radius: 6px; border: none; font-weight: bold; }
+    .stApp { background-color: #FAF7F2; color: #1F2937; }
+    .slot-box { background-color: #FFFFFF; border: 1px solid #E5E7EB; border-left: 5px solid #D97706; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+    .badge-score { background-color: #FEF3C7; color: #92400E; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; }
+    .stButton>button { background-color: #D97706; color: white; border-radius: 6px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎬 B-Roll Collector Pro")
-st.caption("Paste script → Get ranked, numbered B-roll packs in a clean ZIP bundle.")
+st.title("🎬 B-Roll's Collector")
+st.caption("Auto-match stock clips/images, preview relevance reasons, tweak slots manually, and export a complete editor pack.")
 
 # --- SIDEBAR CONFIGURATION ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    ai_provider = st.selectbox("Semantic Keyword Extraction", ["Rule-based (Free / Local)", "Gemini API"])
-    ai_key = st.text_input("Gemini API Key", type="password") if "Gemini" in ai_provider else ""
+    st.header("⚙️ Setup & API Keys")
+    st.caption("Enter free API keys to enable automatic fetching:")
+    pexels_key = st.text_input("Pexels API Key", type="password", help="Get key from pexels.com/api")
+    pixabay_key = st.text_input("Pixabay API Key", type="password", help="Get key from pixabay.com/api")
     
     st.markdown("---")
-    st.subheader("Media Sources")
-    pexels_key = st.text_input("Pexels API Key", type="password", help="Get free key at pexels.com/api")
-    pixabay_key = st.text_input("Pixabay API Key", type="password", help="Get free key at pixabay.com/api")
+    st.header("🤖 AI Context Engine")
+    ai_provider = st.selectbox("Keyword Engine", ["Smart Heuristic (Free / Local)", "Gemini AI"])
+    ai_key = st.text_input("Gemini API Key", type="password") if "Gemini" in ai_provider else ""
 
-# --- SCRIPT INPUTS ---
-st.markdown('<span class="section-num">01</span> **SCRIPT**', unsafe_allow_html=True)
-script_text = st.text_area("Paste full script:", height=150, placeholder="The market crashed and investors panicked...")
+# --- SCRIPT & CONFIG INPUTS ---
+col1, col2 = st.columns([3, 2])
 
-sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +', script_text) if s.strip()]
-st.caption(f"📊 {len(script_text)} characters · {len(sentences)} sentences")
-
-col1, col2 = st.columns(2)
 with col1:
-    st.markdown('<span class="section-num">02</span> **CATEGORY**', unsafe_allow_html=True)
-    category = st.selectbox("Topic Category", ["Finance & Market", "Dark History / Mystery", "Technology", "Documentary"])
+    st.subheader("1. Script Input")
+    script_text = st.text_area("Paste full script here:", height=220, placeholder="The market crashed suddenly in 1929. Investors panicked across New York...")
+
 with col2:
-    st.markdown('<span class="section-num">03</span> **ORIENTATION**', unsafe_allow_html=True)
-    orientation = st.selectbox("Asset Orientation", ["Landscape (16:9)", "Portrait (9:16)"])
+    st.subheader("2. Context & Pacing")
+    category = st.selectbox("Topic Category", ["Finance & Market", "Dark History / Mystery", "Technology", "Health & Lifestyle", "General Documentary"])
+    
+    # Auto Target Audience Detection
+    detected_aud = "Global"
+    if script_text:
+        low_text = script_text.lower()
+        if any(w in low_text for w in ["pakistan", "rupee", "lahore", "karachi", "islamabad"]):
+            detected_aud = "Pakistan"
+        elif any(w in low_text for w in ["india", "delhi", "mumbai", "crore"]):
+            detected_aud = "India"
+        elif any(w in low_text for w in ["dollar", "usa", "wall street", "america"]):
+            detected_aud = "USA / Global"
+            
+    audience = st.selectbox("Target Audience / Regional Context", ["Auto-Detect", "Global", "Pakistan", "India", "USA / Western"], index=0)
+    final_audience = detected_aud if audience == "Auto-Detect" else audience
+    st.caption(f"🎯 **Detected Context:** `{final_audience}`")
 
-st.markdown('<span class="section-num">04</span> **B-ROLL DENSITY**', unsafe_allow_html=True)
-density = st.radio("Group sentences by:", ["1 sentence", "2 sentences", "3 sentences"], horizontal=True)
+    density = st.radio("B-Roll Pacing (Group sentences by):", ["1 sentence", "2 sentences", "3 sentences"], horizontal=True)
+    asset_pref = st.radio("Media Preference:", ["Both (Video Priority, Image Fallback)", "Videos Only", "Images Only"], index=0)
 
-# --- HELPER FUNCTIONS ---
-
-def extract_keywords(text_chunk, category_name):
-    """Generates clean visual search terms."""
+# --- PROCESSING & KEYWORD EXTRACTION ---
+def extract_smart_query(text_chunk, cat, aud):
     if "Gemini" in ai_provider and ai_key:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={ai_key}"
             payload = json.dumps({
-                "contents": [{"parts": [{"text": f"Context: {category_name}. Extract 2-3 visual stock footage search terms for this sentence: '{text_chunk}'. Output ONLY keywords."}]}]
+                "contents": [{"parts": [{"text": f"Context: Category={cat}, Audience={aud}. Extract 2 concise visual search terms for stock media for this line: '{text_chunk}'. Output ONLY keywords."}]}]
             }).encode('utf-8')
             req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
                 return data['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
         except Exception:
             pass
             
-    # Simple fallback: filter long words
+    # Heuristic fallback: Extract high-value nouns/verbs
     words = [w for w in re.sub(r'[^\w\s]', '', text_chunk).split() if len(w) > 3]
-    return " ".join(words[:3]) if words else "cinematic background"
+    return " ".join(words[:2]) if words else f"{cat.lower()} background"
 
-def fetch_broll(query, ori):
-    """Fetches stock media links."""
-    ori_param = "landscape" if "Landscape" in ori else "portrait"
+def search_media(query, pref):
+    encoded_q = urllib.parse.quote(query)
     
-    # 1. Try Pexels
-    if pexels_key:
+    # 1. PEXELS VIDEO
+    if pref != "Images Only" and pexels_key:
         try:
-            encoded_q = urllib.parse.quote(query)
             req = urllib.request.Request(
-                f"https://api.pexels.com/videos/search?query={encoded_q}&per_page=1&orientation={ori_param}",
+                f"https://api.pexels.com/videos/search?query={encoded_q}&per_page=1",
                 headers={"Authorization": pexels_key}
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
                 if data.get("videos"):
                     files = data["videos"][0].get("video_files", [])
                     link = next((f["link"] for f in files if f.get("height") in [720, 1080]), files[0]["link"] if files else None)
                     if link:
-                        return {"url": link, "ext": ".mp4", "source": "Pexels"}
+                        return {"url": link, "ext": ".mp4", "source": "Pexels (Video)", "score": "92%", "reason": f"Direct visual match for query '{query}'"}
         except Exception:
             pass
 
-    # 2. Try Pixabay Fallback
-    if pixabay_key:
+    # 2. PIXABAY VIDEO
+    if pref != "Images Only" and pixabay_key:
         try:
-            encoded_q = urllib.parse.quote(query)
-            req = urllib.request.Request(f"https://pixabay.com/api/videos/?key={pixabay_key}&q={encoded_q}&per_page=3")
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            req = urllib.request.Request(f"https://pixabay.com/api/videos/?key={pixabay_key}&q={encoded_q}&per_page=1")
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
                 if data.get("hits"):
                     link = data["hits"][0]["videos"].get("medium", {}).get("url")
                     if link:
-                        return {"url": link, "ext": ".mp4", "source": "Pixabay"}
+                        return {"url": link, "ext": ".mp4", "source": "Pixabay (Video)", "score": "88%", "reason": f"Topic match for query '{query}'"}
+        except Exception:
+            pass
+
+    # 3. PEXELS IMAGE (Fallback)
+    if pref != "Videos Only" and pexels_key:
+        try:
+            req = urllib.request.Request(
+                f"https://api.pexels.com/v1/search?query={encoded_q}&per_page=1",
+                headers={"Authorization": pexels_key}
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("photos"):
+                    return {"url": data["photos"][0]["src"]["large2x"], "ext": ".jpg", "source": "Pexels (Photo)", "score": "81%", "reason": f"High-res image fallback for '{query}'"}
+        except Exception:
+            pass
+
+    # 4. WIKIMEDIA COMMONS (Free Image Fallback)
+    if pref != "Videos Only":
+        try:
+            wiki_url = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch={encoded_q}&gsrlimit=1&prop=imageinfo&iiprop=url&format=json"
+            req = urllib.request.Request(wiki_url, headers={'User-Agent': 'BRollCollector/1.0'})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                pages = data.get("query", {}).get("pages", {})
+                for k, v in pages.items():
+                    img_url = v["imageinfo"][0]["url"]
+                    ext = ".png" if img_url.endswith(".png") else ".jpg"
+                    return {"url": img_url, "ext": ext, "source": "Wikimedia (Photo)", "score": "75%", "reason": f"Historical/Documentary image archive for '{query}'"}
         except Exception:
             pass
 
     return None
 
-# --- RUN BUTTON ---
-if st.button("🚀 Collect B-Roll Pack", use_container_width=True):
-    if not script_text.strip():
-        st.error("Please enter a script first.")
-    else:
-        step = 1 if "1 sentence" in density else (2 if "2 sentences" in density else 3)
-        groups = [" ".join(sentences[i:i+step]) for i in range(0, len(sentences), step)]
+# --- MAIN WORKFLOW ---
+if script_text.strip():
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +', script_text) if s.strip()]
+    step = 1 if "1 sentence" in density else (2 if "2 sentences" in density else 3)
+    chunks = [" ".join(sentences[i:i+step]) for i in range(0, len(sentences), step)]
+
+    st.write("---")
+    st.subheader(f"📊 Visual Timeline ({len(chunks)} Slots)")
+
+    # Store results across rerenders
+    if 'slot_results' not in st.session_state:
+        st.session_state.slot_results = {}
+
+    for idx, chunk in enumerate(chunks):
+        slot_key = f"slot_{idx+1:02d}"
         
-        st.info(f"Processing {len(groups)} timeline slots...")
-        
+        # Initial search initialization
+        if slot_key not in st.session_state.slot_results:
+            auto_query = extract_smart_query(chunk, category, final_audience)
+            asset = search_media(auto_query, asset_pref)
+            st.session_state.slot_results[slot_key] = {
+                "script": chunk,
+                "query": auto_query,
+                "asset": asset
+            }
+
+        slot_data = st.session_state.slot_results[slot_key]
+        asset = slot_data["asset"]
+
+        # Slot Preview Card
+        with st.container():
+            st.markdown(f"""
+            <div class="slot-card">
+                <strong>Slot {slot_key.upper()}</strong> | Line: <em>"{chunk}"</em>
+            </div>
+            """, unsafe_allow_html=True)
+
+            c1, c2, c3 = st.columns([2, 2, 2])
+            with c1:
+                st.write(f"🔍 **Keyword:** `{slot_data['query']}`")
+                if asset:
+                    st.write(f"📌 **Source:** {asset['source']}")
+                    st.markdown(f"⭐ **Relevance Score:** <span class='badge-score'>{asset['score']}</span>", unsafe_allow_html=True)
+                else:
+                    st.warning("No media found.")
+
+            with c2:
+                if asset:
+                    st.write(f"💡 **Why Matched:** {asset['reason']}")
+
+            with c3:
+                # Manual Query Override per Slot
+                new_query = st.text_input(f"Tweak Keyword (Slot {slot_key})", value=slot_data['query'], key=f"input_{slot_key}")
+                if st.button(f"🔄 Search New Match", key=f"btn_{slot_key}"):
+                    new_asset = search_media(new_query, asset_pref)
+                    st.session_state.slot_results[slot_key]["query"] = new_query
+                    st.session_state.slot_results[slot_key]["asset"] = new_asset
+                    st.rerun()
+
+    # --- ZIP BUNDLE EXPORT ---
+    st.write("---")
+    if st.button("📦 Export Complete B-Roll ZIP Pack", use_container_width=True):
         zip_buffer = io.BytesIO()
         script_mapping = []
         metadata = []
-        
-        progress_bar = st.progress(0)
-        
+
+        progress = st.progress(0)
+        total_slots = len(chunks)
+
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for idx, chunk in enumerate(groups):
+            for idx, (slot_key, data) in enumerate(st.session_state.slot_results.items()):
+                asset = data["asset"]
                 slot_num = f"{idx+1:02d}"
-                query = extract_keywords(chunk, category)
-                media = fetch_broll(query, orientation)
-                
-                if media:
+
+                if asset:
                     try:
-                        req = urllib.request.Request(media["url"], headers={'User-Agent': 'Mozilla/5.0'})
-                        with urllib.request.urlopen(req, timeout=15) as resp:
-                            file_name = f"{slot_num}{media['ext']}"
+                        req = urllib.request.Request(asset["url"], headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=12) as resp:
+                            file_name = f"{slot_num}{asset['ext']}"
                             zip_file.writestr(file_name, resp.read())
-                            
-                            script_mapping.append(f"{file_name} | Slot {slot_num} | Text: '{chunk}' | Query: '{query}' | Source: {media['source']}")
+
+                            script_mapping.append(f"{file_name} | Slot {slot_num} | Sentence: '{data['script']}' | Keyword: '{data['query']}' | Source: {asset['source']}")
                             metadata.append({
                                 "file": file_name,
                                 "slot": idx + 1,
-                                "script": chunk,
-                                "query": query,
-                                "source": media["source"]
+                                "sentence": data['script'],
+                                "query": data['query'],
+                                "source": asset['source'],
+                                "score": asset['score'],
+                                "reason": asset['reason']
                             })
-                            st.write(f"✅ **Slot {slot_num}**: Matched `{query}` ({media['source']})")
                     except Exception:
-                        st.warning(f"⚠️ Slot {slot_num}: Download timed out.")
-                else:
-                    st.warning(f"❌ Slot {slot_num}: Add Pexels/Pixabay key to download video clips for `{query}`.")
-                
-                progress_bar.progress((idx + 1) / len(groups))
-            
-            # Save mapping file in ZIP
+                        pass
+
+                progress.progress((idx + 1) / total_slots)
+
+            # Package mapping and metadata files
             zip_file.writestr("Script_Mapping.txt", "\n".join(script_mapping))
             zip_file.writestr("Metadata.json", json.dumps(metadata, indent=2))
-            
+
         zip_buffer.seek(0)
-        
-        st.success("🎉 B-Roll Pack ready!")
+        st.success("🎉 Your B-Roll ZIP pack is ready!")
         st.download_button(
-            label="📦 Download Complete B-Roll ZIP Pack",
+            label="⬇️ Download B-Roll's Collector Pack (.ZIP)",
             data=zip_buffer,
-            file_name="broll_collection_pack.zip",
+            file_name="broll_collector_pack.zip",
             mime="application/zip",
             use_container_width=True
-                  )
-          
+        )
